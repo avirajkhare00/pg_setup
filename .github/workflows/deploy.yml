@@ -86,7 +86,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: terraform-state
-        path: terraform/terraform.tfstate
+        path: terraform/**/*.tfstate
       if: steps.apply.outcome == 'success' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
 
   ansible:
@@ -123,12 +123,19 @@ jobs:
 
     - name: Get S3 bucket name
       run: |
-        if [ -f terraform/terraform.tfstate ]; then
-          echo "PG_BACKUP_BUCKET=$(cat terraform/terraform.tfstate | jq -r '.outputs.pg_backup_bucket.value')" >> $GITHUB_ENV
-          echo "SERVER_IP=$(cat terraform/terraform.tfstate | jq -r '.outputs.pg_server_public_ip.value')" >> $GITHUB_ENV
+        echo "Checking for Terraform state files..."
+        find terraform -type f -name "*.tfstate"
+        
+        # Find the first tfstate file
+        STATEFILE=$(find terraform -type f -name "*.tfstate" | head -1)
+        
+        if [ -n "$STATEFILE" ]; then
+          echo "Using state file: $STATEFILE"
+          echo "PG_BACKUP_BUCKET=$(cat $STATEFILE | jq -r '.outputs.pg_backup_bucket.value')" >> $GITHUB_ENV
+          echo "SERVER_IP=$(cat $STATEFILE | jq -r '.outputs.pg_server_public_ip.value')" >> $GITHUB_ENV
           echo "Found Terraform state file. Server IP: $SERVER_IP, S3 Bucket: $PG_BACKUP_BUCKET"
         else
-          echo "Error: terraform.tfstate file not found"
+          echo "Error: No Terraform state files found"
           exit 1
         fi
 
