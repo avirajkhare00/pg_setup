@@ -95,6 +95,11 @@ jobs:
     needs: terraform
     if: needs.terraform.result == 'success' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: 'ap-south-1'
+    
     steps:
     - name: Checkout
       uses: actions/checkout@v3
@@ -144,6 +149,14 @@ jobs:
         ssh-keyscan -t rsa ${{ env.SERVER_IP }} >> ~/.ssh/known_hosts
         echo "Added ${{ env.SERVER_IP }} to known hosts"
 
+    - name: Create Ansible inventory
+      run: |
+        mkdir -p ansible/inventory
+        echo "[postgresql]" > ansible/inventory/hosts
+        echo "${{ env.SERVER_IP }} ansible_user=admin ansible_ssh_private_key_file=~/.ssh/id_rsa" >> ansible/inventory/hosts
+        echo "Created Ansible inventory file:"
+        cat ansible/inventory/hosts
+
     - name: Run Ansible Playbook
       run: |
         cd ansible
@@ -155,5 +168,19 @@ jobs:
           exit 1
         fi
         
+        echo "Checking playbook file..."
+        if [ -f playbook.yml ]; then
+          echo "Playbook file exists"
+        else
+          echo "Error: playbook.yml not found"
+          exit 1
+        fi
+        
+        echo "Listing directory contents:"
+        ls -la
+        
         echo "Running Ansible playbook with S3 bucket: ${{ env.PG_BACKUP_BUCKET }}"
-        ANSIBLE_HOST_KEY_CHECKING=False PG_BACKUP_BUCKET=${{ env.PG_BACKUP_BUCKET }} ansible-playbook -i inventory/hosts playbook.yml -v
+        ANSIBLE_HOST_KEY_CHECKING=False \
+        ANSIBLE_STDOUT_CALLBACK=debug \
+        PG_BACKUP_BUCKET=${{ env.PG_BACKUP_BUCKET }} \
+        ansible-playbook -i inventory/hosts playbook.yml -vvv
