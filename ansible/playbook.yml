@@ -1,0 +1,248 @@
+---
+- name: Setup PostgreSQL Server
+  hosts: postgresql
+  become: true
+  vars:
+    pg_version: 15
+    pg_data_device: "/dev/sdf"
+    pg_data_mountpoint: "/var/lib/postgresql/data"
+    pg_user: "postgres"
+    pg_group: "postgres"
+    pg_port: 5432
+    pg_max_connections: 100
+    pg_shared_buffers: "1GB"
+    pg_effective_cache_size: "3GB"
+    pg_maintenance_work_mem: "256MB"
+    pg_backup_dir: "/var/backups/postgresql"
+    pg_scripts_dir: "/opt/pg_scripts"
+    pg_s3_backup_enabled: true
+    pg_s3_backup_bucket: "{{ lookup('env', 'PG_BACKUP_BUCKET', default='') }}"
+    
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install required packages
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+          - python3-psycopg2
+          - acl
+          - xfsprogs
+          - python3-pip
+          - unzip
+        state: present
+
+    - name: Install AWS CLI
+      pip:
+        name: awscli
+        state: present
+      when: pg_s3_backup_enabled | bool
+
+    - name: Check if IMDSv2 token can be retrieved
+      uri:
+        url: http://169.254.169.254/latest/api/token
+        method: PUT
+        headers:
+          X-aws-ec2-metadata-token-ttl-seconds: "21600"
+        status_code: 200
+      register: imds_token
+      failed_when: false
+      changed_when: false
+      when: pg_s3_backup_enabled | bool
+
+    - name: Get instance region
+      uri:
+        url: http://169.254.169.254/latest/meta-data/placement/region
+        method: GET
+        headers:
+          X-aws-ec2-metadata-token: "{{ imds_token.x_aws_ec2_metadata_token | default('') }}"
+        status_code: 200
+      register: instance_region
+      failed_when: false
+      changed_when: false
+      when: pg_s3_backup_enabled | bool and imds_token.status == 200
+
+    - name: Set AWS region fact
+      set_fact:
+        aws_region: "{{ instance_region.content | default('us-west-2') }}"
+      when: pg_s3_backup_enabled | bool and imds_token.status is defined and imds_token.status == 200
+
+    - name: Add PostgreSQL repository key
+      apt_key:
+        url: https://www.postgresql.org/media/keys/ACCC4CF8.asc
+        state: present
+
+    - name: Add PostgreSQL repository
+      apt_repository:
+        repo: "deb http://apt.postgresql.org/pub/repos/apt/ {{ ansible_distribution_release }}-pgdg main"
+        state: present
+        filename: pgdg
+
+    - name: Install PostgreSQL
+      apt:
+        name:
+          - postgresql-{{ pg_version }}
+          - postgresql-client-{{ pg_version }}
+          - postgresql-contrib-{{ pg_version }}
+        state: present
+      notify: Stop PostgreSQL
+
+    - name: Ensure PostgreSQL is stopped before configuring storage
+      service:
+        name: postgresql
+        state: stopped
+
+    - name: Check if device is already formatted
+      command: blkid -s TYPE -o value {{ pg_data_device }}
+      register: device_type
+      failed_when: false
+      changed_when: false
+
+    - name: Format the data disk with XFS
+      command: mkfs.xfs {{ pg_data_device }}
+      when: device_type.stdout == ""
+
+    - name: Create PostgreSQL data directory
+      file:
+        path: "{{ pg_data_mountpoint }}"
+        state: directory
+        owner: "{{ pg_user }}"
+        group: "{{ pg_group }}"
+        mode: '0700'
+
+    - name: Add data disk to fstab
+      mount:
+        path: "{{ pg_data_mountpoint }}"
+        src: "{{ pg_data_device }}"
+        fstype: xfs
+        opts: defaults,noatime
+        state: mounted
+
+    - name: Set ownership of PostgreSQL data directory
+      file:
+        path: "{{ pg_data_mountpoint }}"
+        owner: "{{ pg_user }}"
+        group: "{{ pg_group }}"
+        mode: '0700'
+        recurse: yes
+
+    - name: Initialize PostgreSQL database
+      command: "su - postgres -c '/usr/lib/postgresql/{{ pg_version }}/bin/initdb -D {{ pg_data_mountpoint }}'"
+      args:
+        creates: "{{ pg_data_mountpoint }}/PG_VERSION"
+      become: yes
+      become_user: postgres
+
+    - name: Configure PostgreSQL - postgresql.conf
+      template:
+        src: templates/postgresql.conf.j2
+        dest: "{{ pg_data_mountpoint }}/postgresql.conf"
+        owner: "{{ pg_user }}"
+        group: "{{ pg_group }}"
+        mode: '0600'
+      notify: Restart PostgreSQL
+
+    - name: Configure PostgreSQL - pg_hba.conf
+      template:
+        src: templates/pg_hba.conf.j2
+        dest: "{{ pg_data_mountpoint }}/pg_hba.conf"
+        owner: "{{ pg_user }}"
+        group: "{{ pg_group }}"
+        mode: '0600'
+      notify: Restart PostgreSQL
+
+    - name: Create backup directory
+      file:
+        path: "{{ pg_backup_dir }}"
+        state: directory
+        owner: "{{ pg_user }}"
+        group: "{{ pg_group }}"
+        mode: '0700'
+
+    - name: Create scripts directory
+      file:
+        path: "{{ pg_scripts_dir }}"
+        state: directory
+        owner: "{{ pg_user }}"
+        group: "{{ pg_group }}"
+        mode: '0755'
+
+    - name: Copy maintenance scripts
+      copy:
+        src: "scripts/{{ item }}"
+        dest: "{{ pg_scripts_dir }}/{{ item }}"
+        owner: "{{ pg_user }}"
+        group: "{{ pg_group }}"
+        mode: '0755'
+      with_items:
+        - backup_pg.sh
+        - vacuum_analyze.sh
+        - monitor_pg.sh
+        - s3_backup.sh
+
+    - name: Create AWS CLI config directory for postgres user
+      file:
+        path: "/var/lib/postgresql/.aws"
+        state: directory
+        owner: "{{ pg_user }}"
+        group: "{{ pg_group }}"
+        mode: '0700'
+      when: pg_s3_backup_enabled | bool
+
+    - name: Configure AWS CLI for postgres user
+      template:
+        src: templates/aws_config.j2
+        dest: "/var/lib/postgresql/.aws/config"
+        owner: "{{ pg_user }}"
+        group: "{{ pg_group }}"
+        mode: '0600'
+      when: pg_s3_backup_enabled | bool
+
+    - name: Setup cron jobs
+      cron:
+        name: "{{ item.name }}"
+        user: "{{ pg_user }}"
+        minute: "{{ item.minute }}"
+        hour: "{{ item.hour }}"
+        day: "{{ item.day | default('*') }}"
+        month: "{{ item.month | default('*') }}"
+        weekday: "{{ item.weekday | default('*') }}"
+        job: "{{ item.job }}"
+      with_items:
+        - name: "PostgreSQL Backup"
+          minute: "0"
+          hour: "1"
+          job: "S3_BUCKET={{ pg_s3_backup_bucket }} S3_BACKUP_ENABLED={{ pg_s3_backup_enabled | lower }} {{ pg_scripts_dir }}/backup_pg.sh > /var/log/pg_backup.log 2>&1"
+        - name: "PostgreSQL Vacuum Analyze"
+          minute: "30"
+          hour: "2"
+          weekday: "0"
+          job: "{{ pg_scripts_dir }}/vacuum_analyze.sh > /var/log/pg_vacuum.log 2>&1"
+        - name: "PostgreSQL Monitoring"
+          minute: "*/5"
+          hour: "*"
+          job: "{{ pg_scripts_dir }}/monitor_pg.sh > /var/log/pg_monitor.log 2>&1"
+
+    - name: Ensure PostgreSQL is started and enabled
+      service:
+        name: postgresql
+        state: started
+        enabled: yes
+
+  handlers:
+    - name: Stop PostgreSQL
+      service:
+        name: postgresql
+        state: stopped
+
+    - name: Restart PostgreSQL
+      service:
+        name: postgresql
+        state: restarted

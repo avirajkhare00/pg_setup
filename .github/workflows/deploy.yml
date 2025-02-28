@@ -1,0 +1,102 @@
+name: Deploy PostgreSQL Infrastructure
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  terraform:
+    name: 'Terraform'
+    runs-on: ubuntu-latest
+    
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      TF_VAR_key_name: ${{ secrets.SSH_KEY_NAME }}
+      TF_VAR_ssh_private_key_path: '/tmp/ssh_key.pem'
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: '1.5.0'
+
+    - name: Terraform Init
+      run: |
+        cd terraform
+        terraform init
+
+    - name: Terraform Format
+      run: |
+        cd terraform
+        terraform fmt -check
+
+    - name: Terraform Validate
+      run: |
+        cd terraform
+        terraform validate
+
+    - name: Terraform Plan
+      run: |
+        cd terraform
+        terraform plan -out=tfplan
+      if: github.event_name == 'pull_request'
+
+    - name: Terraform Apply
+      run: |
+        cd terraform
+        terraform apply -auto-approve
+      if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+
+    - name: Save SSH key
+      run: |
+        echo "${{ secrets.SSH_PRIVATE_KEY }}" > /tmp/ssh_key.pem
+        chmod 600 /tmp/ssh_key.pem
+      if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+
+    - name: Wait for instance to be ready
+      run: |
+        sleep 60
+      if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+
+  ansible:
+    name: 'Ansible'
+    runs-on: ubuntu-latest
+    needs: terraform
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install Ansible
+      run: |
+        python -m pip install --upgrade pip
+        pip install ansible
+
+    - name: Save SSH key
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -t rsa $(cat terraform/terraform.tfstate | jq -r '.outputs.pg_server_public_ip.value') >> ~/.ssh/known_hosts
+
+    - name: Get S3 bucket name
+      run: |
+        echo "PG_BACKUP_BUCKET=$(cat terraform/terraform.tfstate | jq -r '.outputs.pg_backup_bucket.value')" >> $GITHUB_ENV
+
+    - name: Run Ansible Playbook
+      run: |
+        cd ansible
+        PG_BACKUP_BUCKET=${{ env.PG_BACKUP_BUCKET }} ansible-playbook -i inventory/hosts playbook.yml
