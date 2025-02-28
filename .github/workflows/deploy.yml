@@ -82,6 +82,13 @@ jobs:
         sleep 60
       if: steps.apply.outcome == 'success' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
 
+    - name: Upload Terraform state
+      uses: actions/upload-artifact@v3
+      with:
+        name: terraform-state
+        path: terraform/terraform.tfstate
+      if: steps.apply.outcome == 'success' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+
   ansible:
     name: 'Ansible'
     runs-on: ubuntu-latest
@@ -91,6 +98,12 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@v3
+
+    - name: Download Terraform state
+      uses: actions/download-artifact@v3
+      with:
+        name: terraform-state
+        path: terraform/
 
     - name: Setup Python
       uses: actions/setup-python@v4
@@ -107,13 +120,33 @@ jobs:
         mkdir -p ~/.ssh
         echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
         chmod 600 ~/.ssh/id_rsa
-        ssh-keyscan -t rsa $(cat terraform/terraform.tfstate | jq -r '.outputs.pg_server_public_ip.value') >> ~/.ssh/known_hosts
 
     - name: Get S3 bucket name
       run: |
-        echo "PG_BACKUP_BUCKET=$(cat terraform/terraform.tfstate | jq -r '.outputs.pg_backup_bucket.value')" >> $GITHUB_ENV
+        if [ -f terraform/terraform.tfstate ]; then
+          echo "PG_BACKUP_BUCKET=$(cat terraform/terraform.tfstate | jq -r '.outputs.pg_backup_bucket.value')" >> $GITHUB_ENV
+          echo "SERVER_IP=$(cat terraform/terraform.tfstate | jq -r '.outputs.pg_server_public_ip.value')" >> $GITHUB_ENV
+          echo "Found Terraform state file. Server IP: $SERVER_IP, S3 Bucket: $PG_BACKUP_BUCKET"
+        else
+          echo "Error: terraform.tfstate file not found"
+          exit 1
+        fi
+
+    - name: Add SSH known hosts
+      run: |
+        ssh-keyscan -t rsa ${{ env.SERVER_IP }} >> ~/.ssh/known_hosts
+        echo "Added ${{ env.SERVER_IP }} to known hosts"
 
     - name: Run Ansible Playbook
       run: |
         cd ansible
-        PG_BACKUP_BUCKET=${{ env.PG_BACKUP_BUCKET }} ansible-playbook -i inventory/hosts playbook.yml
+        echo "Checking inventory file..."
+        if [ -f inventory/hosts ]; then
+          cat inventory/hosts
+        else
+          echo "Error: Ansible inventory file not found"
+          exit 1
+        fi
+        
+        echo "Running Ansible playbook with S3 bucket: ${{ env.PG_BACKUP_BUCKET }}"
+        ANSIBLE_HOST_KEY_CHECKING=False PG_BACKUP_BUCKET=${{ env.PG_BACKUP_BUCKET }} ansible-playbook -i inventory/hosts playbook.yml -v
