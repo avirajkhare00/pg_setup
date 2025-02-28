@@ -42,6 +42,13 @@ jobs:
         cd terraform
         terraform validate
 
+    - name: Create Terraform Workspace
+      if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+      run: |
+        cd terraform
+        # Create a new workspace named after the commit SHA
+        terraform workspace new ${GITHUB_SHA:0:8} || terraform workspace select ${GITHUB_SHA:0:8}
+
     - name: Terraform Plan
       run: |
         cd terraform
@@ -49,27 +56,37 @@ jobs:
       if: github.event_name == 'pull_request'
 
     - name: Terraform Apply
+      id: apply
       run: |
         cd terraform
         terraform apply -auto-approve
       if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+      continue-on-error: true
+
+    - name: Terraform Rollback
+      if: steps.apply.outcome == 'failure' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      run: |
+        cd terraform
+        echo "Terraform apply failed, rolling back changes..."
+        terraform destroy -auto-approve
+        echo "Rollback completed."
 
     - name: Save SSH key
       run: |
         echo "${{ secrets.SSH_PRIVATE_KEY }}" > /tmp/ssh_key.pem
         chmod 600 /tmp/ssh_key.pem
-      if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+      if: steps.apply.outcome == 'success' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
 
     - name: Wait for instance to be ready
       run: |
         sleep 60
-      if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+      if: steps.apply.outcome == 'success' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
 
   ansible:
     name: 'Ansible'
     runs-on: ubuntu-latest
     needs: terraform
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: needs.terraform.result == 'success' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     
     steps:
     - name: Checkout
