@@ -1,5 +1,5 @@
 # AWS region
-region = "us-west-2"
+region = "ap-south-1"
 
 # Resource prefix
 prefix = "pg-setup"
@@ -7,7 +7,7 @@ prefix = "pg-setup"
 # Network configuration
 vpc_cidr          = "10.0.0.0/16"
 subnet_cidr       = "10.0.1.0/24"
-availability_zone = "us-west-2a"
+availability_zone = "ap-south-1a"
 
 # Instance configuration
 debian_ami_id        = "ami-00c257e12d6828491"
