@@ -167,7 +167,7 @@ resource "aws_iam_policy" "pg_s3_access" {
           "s3:ListBucket",
           "s3:DeleteObject"
         ]
-        Effect   = "Allow"
+        Effect = "Allow"
         Resource = [
           aws_s3_bucket.pg_backups.arn,
           "${aws_s3_bucket.pg_backups.arn}/*"

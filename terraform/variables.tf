@@ -32,7 +32,7 @@ variable "debian_ami_id" {
   description = "AMI ID for Debian"
   type        = string
   # Debian 11 (Bullseye) in us-west-2
-  default     = "ami-0b7d6d6d3da7bb791"
+  default = "ami-0b7d6d6d3da7bb791"
 }
 
 variable "instance_type" {
