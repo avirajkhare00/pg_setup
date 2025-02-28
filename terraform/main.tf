@@ -2,6 +2,9 @@ provider "aws" {
   region = var.region
 }
 
+provider "null" {
+}
+
 # Create a VPC
 resource "aws_vpc" "pg_vpc" {
   cidr_block           = var.vpc_cidr
@@ -206,8 +209,12 @@ resource "aws_instance" "pg_server" {
   tags = {
     Name = "${var.prefix}-pg-server"
   }
+}
 
-  # Generate Ansible inventory
+# Generate Ansible inventory after instance is created
+resource "null_resource" "ansible_inventory" {
+  depends_on = [aws_instance.pg_server]
+
   provisioner "local-exec" {
     command = <<-EOT
       mkdir -p ${path.module}/../ansible/inventory
