@@ -141,7 +141,7 @@
         recurse: yes
 
     - name: Initialize PostgreSQL database
-      command: "su - postgres -c '/usr/lib/postgresql/{{ pg_version }}/bin/initdb -D {{ pg_data_mountpoint }}'"
+      command: "/usr/lib/postgresql/{{ pg_version }}/bin/initdb -D {{ pg_data_mountpoint }}"
       args:
         creates: "{{ pg_data_mountpoint }}/PG_VERSION"
       become: yes
