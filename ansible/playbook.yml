@@ -37,6 +37,7 @@
           - xfsprogs
           - python3-pip
           - unzip
+          - cron
         state: present
 
     - name: Check if AWS CLI is installed
