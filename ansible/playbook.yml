@@ -39,12 +39,18 @@
           - unzip
         state: present
 
-    - name: Install AWS CLI
-      pip:
+    - name: Check if AWS CLI is installed
+      command: which aws
+      register: aws_cli_check
+      failed_when: false
+      changed_when: false
+      when: pg_s3_backup_enabled | bool
+
+    - name: Install AWS CLI using apt
+      apt:
         name: awscli
         state: present
-        extra_args: --user
-      when: pg_s3_backup_enabled | bool
+      when: pg_s3_backup_enabled | bool and aws_cli_check.rc != 0
 
     - name: Check if IMDSv2 token can be retrieved
       uri:
